@@ -14,10 +14,12 @@ func isCRLF(raw string, i int) bool {
 	return false
 }
 
-func deserialiseSimpleString(raw string) (string, error) {
-	value := strings.Builder{} 
+func deserialiseSimpleString(raw string, pointer *int) (string, error) {
+	value := strings.Builder{}
 
-	for i := 1; i < len(raw); i++ {
+	*pointer += 1
+	for i := *pointer; i < len(raw); i++ {
+		*pointer += 1
 		if isCRLF(raw, i) {
 			return value.String(), nil
 		}
@@ -27,11 +29,14 @@ func deserialiseSimpleString(raw string) (string, error) {
 	return "", fmt.Errorf("simple string not terminated")
 }
 
-func deserialiseErrorString(raw string) (error, error) {
-	value := strings.Builder{} 
+func deserialiseErrorString(raw string, pointer *int) (error, error) {
+	value := strings.Builder{}
 
+	*pointer += 1
 	for i := 1; i < len(raw); i++ {
+		*pointer += 1
 		if isCRLF(raw, i) {
+			*pointer += 1
 			return errors.New(value.String()), nil
 		}
 		value.WriteByte(raw[i])
@@ -40,12 +45,12 @@ func deserialiseErrorString(raw string) (error, error) {
 	return nil, fmt.Errorf("error not terminated")
 }
 
-func deserialiseBulkString(raw string) (interface{}, error)  {
+func deserialiseBulkString(raw string, pointer *int) (interface{}, error) {
 	toParse := string(raw[1:])
 	valuesToParse := 0
 	rawValues := ""
 
-	if (toParse[0] == '-') {
+	if toParse[0] == '-' {
 		return nil, nil
 	}
 
@@ -64,16 +69,21 @@ func deserialiseBulkString(raw string) (interface{}, error)  {
 	if err != nil {
 		return "", fmt.Errorf("Failed to parse values (%q) err: %w", rawValues, err)
 	}
-	
+
+	*pointer += len(rawValues) + 1 + valuesToParse + 2 + 2
+
 	return toParse[:valuesToParse], nil
 }
 
-func deserialiseInteger(raw string) (int, error) {
+func deserialiseInteger(raw string, pointer *int) (int, error) {
 	value := 0
 	rawValues := ""
 
+	*pointer += 1
 	for i := 1; i < len(raw); i++ {
+		*pointer += 1
 		if isCRLF(raw, i) {
+			*pointer += 1
 			break
 		}
 		rawValues += string(raw[i])
@@ -87,7 +97,8 @@ func deserialiseInteger(raw string) (int, error) {
 	return value, nil
 }
 
-func deserialiseBool(raw string) (bool, error) {
+func deserialiseBool(raw string, pointer *int) (bool, error) {
+	*pointer += 4
 	if raw[1] == 't' {
 		return true, nil
 	}
@@ -99,7 +110,7 @@ func deserialiseBool(raw string) (bool, error) {
 	return false, fmt.Errorf("Failed to parse bool (%q)", raw)
 }
 
-func deserialiseArray(raw string) ([]interface{}, error) {
+func deserialiseArray(raw string, pointer *int) ([]interface{}, error) {
 	toParse := string(raw[1:])
 	valuesToParse := 0
 	rawValues := ""
@@ -121,30 +132,36 @@ func deserialiseArray(raw string) ([]interface{}, error) {
 		return values, fmt.Errorf("Failed to parse values (%q) err: %w", rawValues, err)
 	}
 
-	//NOTE:
-	// figuere out how to preserve a pointer between different deserialise functions
-	for i := 0; i < len(toParse); i++ {
+	*pointer += len(rawValues) + 3
+
+	for i := 0; i < valuesToParse; i++ {
+		value, err := Deserialise(raw[*pointer:], pointer)
+		if err != nil {
+			return values, fmt.Errorf("deserialise(%q) returned error: %v", raw, err)
+		}
+		values = append(values, value)
 	}
-	
+
 	return values, nil
 }
 
-func Deserialise(raw string) (interface{}, error)  {
+func Deserialise(raw string, pointer *int) (interface{}, error) {
 	switch raw[0] {
 	case '+':
-		return deserialiseSimpleString(raw)
+		return deserialiseSimpleString(raw, pointer)
 	case '-':
-		return deserialiseErrorString(raw)
+		return deserialiseErrorString(raw, pointer)
 	case '$':
-		return deserialiseBulkString(raw)
+		return deserialiseBulkString(raw, pointer)
 	case ':':
-		return deserialiseInteger(raw)
+		return deserialiseInteger(raw, pointer)
 	case '#':
-		return deserialiseBool(raw)
+		return deserialiseBool(raw, pointer)
 	case '_': // null
+		*pointer += 3
 		return nil, nil
 	case '*':
-		return deserialiseArray(raw)
+		return deserialiseArray(raw, pointer)
 	}
 
 	return "", fmt.Errorf("unknown type: %#v", raw[0])
